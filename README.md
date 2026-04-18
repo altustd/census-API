@@ -1,0 +1,49 @@
+# U.S. Census API — Economic Distress Classifier
+
+A portfolio analysis using the Census Bureau API to classify county-level economic distress with logistic regression.
+
+## Viewing the Report
+
+### Option 1 — Open the rendered HTML (recommended)
+Download [`census_analysis.html`](census_analysis.html) and open it in any browser.
+The file is fully self-contained — no server needed. All charts are interactive.
+
+### Option 2 — Download the PDF
+Download [`census_analysis.pdf`](census_analysis.pdf) for a print-ready static version.
+
+### Option 3 — Render it yourself
+```bash
+pip install -r requirements.txt
+cp .env.example .env        # add your Census API key
+quarto render census_analysis.qmd
+```
+
+---
+
+## What It Does
+
+- Pulls ACS 5-year estimates at **state** and **county** granularity via the Census API
+- Visualizes key socioeconomic indicators with interactive choropleth maps
+- Trains a **logistic regression classifier** to predict whether a county exceeds a 20% poverty rate
+- Interprets model results via odds ratios
+- Closes with a **South Carolina case study**
+
+## Features Used
+
+| Feature | ACS Table |
+|---|---|
+| Median household income | B19013 |
+| Unemployment rate | B23025 |
+| Bachelor's degree attainment | B15003 |
+| Broadband internet access | B28002 |
+| Rent-burdened households | B25070 |
+| Median age | B01002 |
+
+## API Key
+
+A free Census API key is available at [api.census.gov/data/key_signup.html](https://api.census.gov/data/key_signup.html).
+Store it in a `.env` file (see `.env.example`). The key is never committed to the repo.
+
+## Tech Stack
+
+`Python` · `Census API` · `pandas` · `scikit-learn` · `Plotly` · `Quarto`

@@ -1,0 +1,604 @@
+---
+title: "Classifying Economic Distress with U.S. Census Data"
+subtitle: "American Community Survey 5-Year Estimates · Logistic Regression"
+author: "Troy Altus"
+date: today
+format:
+  html:
+    theme: cosmo
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    code-tools: true
+    self-contained: true
+    fig-width: 9
+    fig-height: 5
+execute:
+  warning: false
+  message: false
+---
+
+## Overview
+
+This analysis uses the **U.S. Census Bureau API** to pull American Community Survey (ACS) 5-year estimates at two levels of granularity — state and county. The central question is:
+
+> **Can we classify whether a U.S. county is economically distressed using socioeconomic indicators drawn from the Census?**
+
+Economic distress is defined as a county poverty rate exceeding **20%** — a threshold used by federal programs including the Appalachian Regional Commission and the Economic Development Administration.
+
+A logistic regression model is trained on county-level data. The resulting odds ratios provide a clean, interpretable story about which factors most strongly predict distress. The analysis closes with a drill-down into **South Carolina** to see how the model performs in a single state.
+
+---
+
+## Setup
+
+```{python}
+#| label: setup
+#| code-summary: "Libraries and Census API connection"
+
+import os
+import json
+import pickle
+import warnings
+from pathlib import Path
+from urllib.request import urlopen
+
+import numpy as np
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+from census import Census
+from dotenv import load_dotenv
+from us import states as us_states
+from sklearn.linear_model import LogisticRegression
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import (
+    roc_auc_score, roc_curve,
+    confusion_matrix, classification_report
+)
+
+warnings.filterwarnings("ignore")
+load_dotenv()
+
+c = Census(os.getenv("CENSUS_API_KEY"))
+print("Census API connected.")
+```
+
+```{python}
+#| label: variables
+#| code-summary: "ACS variable definitions"
+
+VARS = (
+    "NAME",
+    "B19013_001E",  # Median household income
+    "B23025_003E",  # Civilian labor force
+    "B23025_005E",  # Unemployed
+    "B17001_001E",  # Total for poverty status
+    "B17001_002E",  # Below poverty level
+    "B15003_001E",  # Total pop 25+ (education denominator)
+    "B15003_022E",  # Bachelor's degree
+    "B15003_023E",  # Master's degree
+    "B15003_024E",  # Professional degree
+    "B15003_025E",  # Doctorate
+    "B01002_001E",  # Median age
+    "B28002_001E",  # Total households (internet denominator)
+    "B28002_004E",  # Broadband internet subscribers
+    "B25070_001E",  # Total renter-occupied units
+    "B25070_007E",  # Gross rent 30–34.9% of income
+    "B25070_008E",  # Gross rent 35–39.9%
+    "B25070_009E",  # Gross rent 40–49.9%
+    "B25070_010E",  # Gross rent 50%+
+    "B01003_001E",  # Total population
+)
+
+RENAME = {
+    "B19013_001E": "median_income",
+    "B23025_003E": "labor_force",
+    "B23025_005E": "unemployed",
+    "B17001_001E": "pop_poverty_denom",
+    "B17001_002E": "pop_below_poverty",
+    "B15003_001E": "pop_25plus",
+    "B15003_022E": "bachelors",
+    "B15003_023E": "masters",
+    "B15003_024E": "professional",
+    "B15003_025E": "doctorate",
+    "B01002_001E": "median_age",
+    "B28002_001E": "internet_total",
+    "B28002_004E": "broadband",
+    "B25070_001E": "rent_total",
+    "B25070_007E": "rent_30_34",
+    "B25070_008E": "rent_35_39",
+    "B25070_009E": "rent_40_49",
+    "B25070_010E": "rent_50plus",
+    "B01003_001E": "total_pop",
+}
+
+FEATURES = [
+    "median_income", "unemployment_rate", "pct_bachelors",
+    "pct_broadband", "pct_rent_burdened", "median_age"
+]
+
+FEATURE_LABELS = {
+    "median_income":      "Median Household Income",
+    "unemployment_rate":  "Unemployment Rate (%)",
+    "pct_bachelors":      "Bachelor's Degree or Higher (%)",
+    "pct_broadband":      "Broadband Access (%)",
+    "pct_rent_burdened":  "Rent-Burdened Households (%)",
+    "median_age":         "Median Age",
+}
+```
+
+---
+
+## National Overview
+
+### State-Level Indicators
+
+```{python}
+#| label: state-pull
+#| code-summary: "Pull ACS 5-year estimates for all 50 states"
+
+raw = c.acs5.get(VARS, {"for": "state:*"})
+df_states = pd.DataFrame(raw).rename(columns=RENAME)
+
+num_cols = [col for col in df_states.columns if col not in ("NAME", "state")]
+df_states[num_cols] = df_states[num_cols].apply(pd.to_numeric, errors="coerce")
+
+df_states["poverty_rate"]      = df_states["pop_below_poverty"] / df_states["pop_poverty_denom"] * 100
+df_states["unemployment_rate"] = df_states["unemployed"] / df_states["labor_force"] * 100
+df_states["pct_bachelors"]     = (df_states[["bachelors","masters","professional","doctorate"]].sum(axis=1)
+                                   / df_states["pop_25plus"] * 100)
+df_states["pct_broadband"]     = df_states["broadband"] / df_states["internet_total"] * 100
+df_states["pct_rent_burdened"] = (df_states[["rent_30_34","rent_35_39","rent_40_49","rent_50plus"]].sum(axis=1)
+                                   / df_states["rent_total"] * 100)
+
+fips_to_abbr = {s.fips: s.abbr for s in us_states.STATES}
+df_states["abbr"] = df_states["state"].map(fips_to_abbr)
+df_states = df_states.dropna(subset=["abbr"])
+
+df_states.head(3)
+```
+
+```{python}
+#| label: state-maps
+#| code-summary: "Choropleth maps — four key indicators"
+
+indicators = {
+    "poverty_rate":      ("Poverty Rate (%)",             "RdYlGn_r"),
+    "median_income":     ("Median Household Income ($)",  "RdYlGn"),
+    "pct_bachelors":     ("Bachelor's Degree or Higher (%)","Blues"),
+    "pct_broadband":     ("Broadband Access (%)",          "Teal"),
+}
+
+fig = make_subplots(
+    rows=2, cols=2,
+    subplot_titles=list(v[0] for v in indicators.values()),
+    specs=[[{"type": "choropleth"}] * 2] * 2,
+    vertical_spacing=0.08,
+    horizontal_spacing=0.02,
+)
+
+positions = [(1,1),(1,2),(2,1),(2,2)]
+for (col, (label, scale)), (row, col_pos) in zip(indicators.items(), positions):
+    trace = go.Choropleth(
+        locations=df_states["abbr"],
+        z=df_states[col],
+        locationmode="USA-states",
+        colorscale=scale,
+        showscale=True,
+        colorbar=dict(thickness=10, len=0.4),
+        hovertemplate="%{location}<br>" + label + ": %{z:.1f}<extra></extra>",
+    )
+    fig.add_trace(trace, row=row, col=col_pos)
+
+for i in range(1, 5):
+    fig.update_geos(
+        scope="usa",
+        showlakes=False,
+        row=(i - 1) // 2 + 1,
+        col=(i - 1) % 2 + 1,
+    )
+
+fig.update_layout(
+    height=700,
+    title_text="Key Socioeconomic Indicators by State",
+    title_x=0.5,
+    margin=dict(l=0, r=0, t=60, b=0),
+)
+fig.show()
+```
+
+### State Rankings
+
+```{python}
+#| label: state-rankings
+#| code-summary: "Top and bottom 10 states by poverty rate"
+
+top10    = df_states.nlargest(10, "poverty_rate")[["NAME","poverty_rate","median_income","pct_bachelors"]].reset_index(drop=True)
+bottom10 = df_states.nsmallest(10, "poverty_rate")[["NAME","poverty_rate","median_income","pct_bachelors"]].reset_index(drop=True)
+
+fig = make_subplots(rows=1, cols=2, subplot_titles=["Highest Poverty States", "Lowest Poverty States"])
+
+fig.add_trace(go.Bar(
+    x=top10["poverty_rate"], y=top10["NAME"],
+    orientation="h", marker_color="#d73027",
+    name="High Poverty",
+    hovertemplate="%{y}: %{x:.1f}%<extra></extra>",
+), row=1, col=1)
+
+fig.add_trace(go.Bar(
+    x=bottom10["poverty_rate"], y=bottom10["NAME"],
+    orientation="h", marker_color="#1a9850",
+    name="Low Poverty",
+    hovertemplate="%{y}: %{x:.1f}%<extra></extra>",
+), row=1, col=2)
+
+fig.update_layout(
+    height=380, showlegend=False,
+    title_text="States by Poverty Rate — Top & Bottom 10",
+    title_x=0.5,
+    margin=dict(l=0, r=0, t=60, b=0),
+)
+fig.update_xaxes(title_text="Poverty Rate (%)")
+fig.show()
+```
+
+---
+
+## County-Level Analysis
+
+Dropping to the county level reveals the true heterogeneity within states. The full dataset covers all **~3,100 U.S. counties**.
+
+```{python}
+#| label: county-pull
+#| code-summary: "Pull ACS data for all counties (cached after first run)"
+
+CACHE = Path("county_data.pkl")
+
+if CACHE.exists():
+    df_counties = pickle.load(open(CACHE, "rb"))
+else:
+    raw = c.acs5.get(VARS, {"for": "county:*", "in": "state:*"})
+    df_counties = pd.DataFrame(raw).rename(columns=RENAME)
+    num_cols = [col for col in df_counties.columns if col not in ("NAME", "state", "county")]
+    df_counties[num_cols] = df_counties[num_cols].apply(pd.to_numeric, errors="coerce")
+    pickle.dump(df_counties, open(CACHE, "wb"))
+
+df_counties["poverty_rate"]      = df_counties["pop_below_poverty"] / df_counties["pop_poverty_denom"] * 100
+df_counties["unemployment_rate"] = df_counties["unemployed"] / df_counties["labor_force"] * 100
+df_counties["pct_bachelors"]     = (df_counties[["bachelors","masters","professional","doctorate"]].sum(axis=1)
+                                     / df_counties["pop_25plus"] * 100)
+df_counties["pct_broadband"]     = df_counties["broadband"] / df_counties["internet_total"] * 100
+df_counties["pct_rent_burdened"] = (df_counties[["rent_30_34","rent_35_39","rent_40_49","rent_50plus"]].sum(axis=1)
+                                     / df_counties["rent_total"] * 100)
+
+df_counties["fips"] = df_counties["state"].str.zfill(2) + df_counties["county"].str.zfill(3)
+df_counties["high_poverty"] = (df_counties["poverty_rate"] > 20).astype(int)
+
+df_counties = df_counties.dropna(subset=FEATURES + ["poverty_rate"])
+df_counties = df_counties[df_counties["median_income"] > 0]
+
+print(f"Counties loaded: {len(df_counties):,}")
+print(f"High-poverty counties (>20%): {df_counties['high_poverty'].sum():,} "
+      f"({df_counties['high_poverty'].mean()*100:.1f}%)")
+```
+
+### Feature Distributions
+
+```{python}
+#| label: distributions
+#| code-summary: "Distribution of each feature, split by distress class"
+
+colors = {0: "#1a9850", 1: "#d73027"}
+labels = {0: "Not Distressed", 1: "Distressed (>20% poverty)"}
+
+fig = make_subplots(rows=2, cols=3, subplot_titles=list(FEATURE_LABELS.values()))
+
+for idx, feat in enumerate(FEATURES):
+    row, col = divmod(idx, 3)
+    for cls in [0, 1]:
+        subset = df_counties[df_counties["high_poverty"] == cls][feat].dropna()
+        fig.add_trace(go.Histogram(
+            x=subset, name=labels[cls],
+            marker_color=colors[cls], opacity=0.6,
+            showlegend=(idx == 0),
+            legendgroup=str(cls),
+            hovertemplate=f"{labels[cls]}<br>{FEATURE_LABELS[feat]}: %{{x}}<extra></extra>",
+        ), row=row+1, col=col+1)
+
+fig.update_layout(
+    height=550, barmode="overlay",
+    title_text="Feature Distributions by Economic Distress Class",
+    title_x=0.5,
+    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    margin=dict(l=0, r=0, t=80, b=0),
+)
+fig.show()
+```
+
+### County Poverty Map
+
+```{python}
+#| label: county-map
+#| code-summary: "County-level poverty rate choropleth"
+
+with urlopen("https://raw.githubusercontent.com/plotly/datasets/master/geojson-counties-fips.json") as r:
+    counties_geo = json.load(r)
+
+fig = px.choropleth(
+    df_counties,
+    geojson=counties_geo,
+    locations="fips",
+    color="poverty_rate",
+    color_continuous_scale="RdYlGn_r",
+    range_color=(0, 40),
+    scope="usa",
+    labels={"poverty_rate": "Poverty Rate (%)"},
+    title="County-Level Poverty Rate",
+    hover_name="NAME",
+    hover_data={"fips": False, "poverty_rate": ":.1f"},
+)
+fig.update_layout(
+    margin=dict(l=0, r=0, t=40, b=0),
+    coloraxis_colorbar=dict(title="Poverty<br>Rate (%)"),
+)
+fig.show()
+```
+
+---
+
+## Classification Model
+
+### Target & Features
+
+The binary target is `high_poverty` (poverty rate > 20%). Features are standardized before fitting to make coefficients directly comparable.
+
+```{python}
+#| label: model-prep
+#| code-summary: "Train/test split and feature scaling"
+
+X = df_counties[FEATURES].copy()
+y = df_counties["high_poverty"]
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=42, stratify=y
+)
+
+scaler = StandardScaler()
+X_train_s = scaler.fit_transform(X_train)
+X_test_s  = scaler.transform(X_test)
+
+print(f"Training set: {len(X_train):,} counties")
+print(f"Test set:     {len(X_test):,} counties")
+```
+
+### Fit Logistic Regression
+
+```{python}
+#| label: model-fit
+#| code-summary: "Fit logistic regression and evaluate"
+
+model = LogisticRegression(max_iter=1000, random_state=42)
+model.fit(X_train_s, y_train)
+
+y_pred  = model.predict(X_test_s)
+y_proba = model.predict_proba(X_test_s)[:, 1]
+auc     = roc_auc_score(y_test, y_proba)
+
+print(f"AUC-ROC: {auc:.4f}\n")
+print(classification_report(y_test, y_pred, target_names=["Not Distressed","Distressed"]))
+```
+
+### ROC Curve
+
+```{python}
+#| label: roc-curve
+#| code-summary: "ROC curve"
+
+fpr, tpr, _ = roc_curve(y_test, y_proba)
+
+fig = go.Figure()
+fig.add_trace(go.Scatter(
+    x=fpr, y=tpr, mode="lines",
+    line=dict(color="#1f77b4", width=2.5),
+    name=f"Logistic Regression (AUC = {auc:.3f})",
+    hovertemplate="FPR: %{x:.3f}<br>TPR: %{y:.3f}<extra></extra>",
+))
+fig.add_trace(go.Scatter(
+    x=[0, 1], y=[0, 1], mode="lines",
+    line=dict(color="gray", width=1, dash="dash"),
+    name="Random Classifier",
+    showlegend=True,
+))
+fig.update_layout(
+    title="ROC Curve — County Economic Distress Classifier",
+    xaxis_title="False Positive Rate",
+    yaxis_title="True Positive Rate",
+    legend=dict(x=0.6, y=0.1),
+    width=650, height=450,
+)
+fig.show()
+```
+
+### Confusion Matrix
+
+```{python}
+#| label: confusion-matrix
+#| code-summary: "Confusion matrix heatmap"
+
+cm = confusion_matrix(y_test, y_pred)
+labels_cm = ["Not Distressed", "Distressed"]
+
+fig = px.imshow(
+    cm,
+    labels=dict(x="Predicted", y="Actual", color="Count"),
+    x=labels_cm, y=labels_cm,
+    color_continuous_scale="Blues",
+    text_auto=True,
+    title="Confusion Matrix",
+)
+fig.update_layout(width=450, height=400)
+fig.show()
+```
+
+### Odds Ratios
+
+Coefficients are exponentiated to give **odds ratios** — values above 1.0 increase the odds of distress, values below 1.0 decrease them.
+
+```{python}
+#| label: odds-ratios
+#| code-summary: "Visualize feature odds ratios"
+
+coefs      = model.coef_[0]
+odds_ratios = np.exp(coefs)
+feat_names  = [FEATURE_LABELS[f] for f in FEATURES]
+
+df_or = pd.DataFrame({
+    "feature":    feat_names,
+    "odds_ratio": odds_ratios,
+    "direction":  ["Increases Risk" if o > 1 else "Decreases Risk" for o in odds_ratios],
+}).sort_values("odds_ratio", ascending=True)
+
+fig = px.bar(
+    df_or,
+    x="odds_ratio", y="feature",
+    orientation="h",
+    color="direction",
+    color_discrete_map={"Increases Risk": "#d73027", "Decreases Risk": "#1a9850"},
+    title="Odds Ratios — Effect of Each Feature on Economic Distress",
+    labels={"odds_ratio": "Odds Ratio (exp(β))", "feature": ""},
+    text=df_or["odds_ratio"].round(3),
+)
+fig.add_vline(x=1.0, line_dash="dash", line_color="gray")
+fig.update_traces(textposition="outside")
+fig.update_layout(
+    height=400, showlegend=True,
+    legend_title="Effect Direction",
+    margin=dict(l=0, r=80, t=50, b=0),
+)
+fig.show()
+```
+
+**Reading the chart:** Each unit increase in a standardized feature multiplies the odds of economic distress by its odds ratio. Features with ratios furthest from 1.0 are the strongest predictors.
+
+---
+
+## South Carolina Case Study
+
+```{python}
+#| label: sc-data
+#| code-summary: "Filter counties to South Carolina (FIPS 45)"
+
+SC_FIPS = "45"
+df_sc = df_counties[df_counties["state"] == SC_FIPS].copy()
+
+df_sc["predicted_prob"]  = model.predict_proba(scaler.transform(df_sc[FEATURES]))[:, 1]
+df_sc["predicted_class"] = model.predict(scaler.transform(df_sc[FEATURES]))
+df_sc["county_name"]     = df_sc["NAME"].str.replace(r",.*", "", regex=True)
+
+print(f"SC counties: {len(df_sc)}")
+print(f"Actual distressed:    {df_sc['high_poverty'].sum()} counties")
+print(f"Predicted distressed: {df_sc['predicted_class'].sum()} counties")
+```
+
+```{python}
+#| label: sc-map
+#| code-summary: "SC county map — predicted probability of distress"
+
+fig = px.choropleth(
+    df_sc,
+    geojson=counties_geo,
+    locations="fips",
+    color="predicted_prob",
+    color_continuous_scale="RdYlGn_r",
+    range_color=(0, 1),
+    scope="usa",
+    title="SC Counties — Predicted Probability of Economic Distress",
+    hover_name="county_name",
+    hover_data={
+        "fips": False,
+        "predicted_prob": ":.2f",
+        "poverty_rate": ":.1f",
+        "median_income": ":,",
+    },
+    labels={
+        "predicted_prob": "P(Distressed)",
+        "poverty_rate":   "Poverty Rate (%)",
+        "median_income":  "Median Income ($)",
+    },
+)
+fig.update_geos(fitbounds="locations", visible=False)
+fig.update_layout(
+    margin=dict(l=0, r=0, t=50, b=0),
+    coloraxis_colorbar=dict(title="P(Distressed)"),
+)
+fig.show()
+```
+
+```{python}
+#| label: sc-scatter
+#| code-summary: "Income vs. poverty rate for SC counties"
+
+fig = px.scatter(
+    df_sc,
+    x="median_income", y="poverty_rate",
+    color="predicted_prob",
+    color_continuous_scale="RdYlGn_r",
+    size="total_pop",
+    hover_name="county_name",
+    hover_data={
+        "median_income":   ":,",
+        "poverty_rate":    ":.1f",
+        "predicted_prob":  ":.2f",
+        "total_pop":       ":,",
+    },
+    labels={
+        "median_income":  "Median Household Income ($)",
+        "poverty_rate":   "Poverty Rate (%)",
+        "predicted_prob": "P(Distressed)",
+        "total_pop":      "Population",
+    },
+    title="SC Counties — Median Income vs. Poverty Rate",
+)
+fig.add_hline(y=20, line_dash="dash", line_color="gray",
+              annotation_text="20% distress threshold", annotation_position="top right")
+fig.update_layout(height=480)
+fig.show()
+```
+
+---
+
+## Summary
+
+```{python}
+#| label: summary
+#| code-summary: "Summary statistics"
+#| echo: false
+
+n_counties   = len(df_counties)
+pct_distress = df_counties["high_poverty"].mean() * 100
+top_risk_feat = df_or.iloc[-1]["feature"]
+top_safe_feat = df_or.iloc[0]["feature"]
+
+summary_df = pd.DataFrame({
+    "Metric": [
+        "Counties analyzed",
+        "High-poverty counties (>20%)",
+        "AUC-ROC",
+        "Strongest predictor of distress",
+        "Strongest protective predictor",
+    ],
+    "Value": [
+        f"{n_counties:,}",
+        f"{pct_distress:.1f}% of total",
+        f"{auc:.3f}",
+        top_risk_feat,
+        top_safe_feat,
+    ],
+})
+summary_df.style.hide(axis="index")
+```
+
+The model demonstrates that **income, education, and broadband access** are the dominant signals for county-level economic distress — consistent with the academic literature on concentrated poverty. The South Carolina case study reveals a familiar geographic divide: coastal and urban counties (Charleston, Richland, Beaufort) are low-risk, while rural counties in the Pee Dee and Corridor of Shame regions show the highest predicted probabilities.

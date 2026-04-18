@@ -1,0 +1,10 @@
+.env
+# Exclude raw email files
+Gmail - *
+*_files/
+__pycache__/
+.ipynb_checkpoints/
+_site/
+/.quarto/
+**/*.quarto_ipynb
+county_data.pkl

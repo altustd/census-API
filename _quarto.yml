@@ -1,0 +1,25 @@
+project:
+  type: website
+  output-dir: _site
+
+website:
+  title: "U.S. Census API · Economic Distress Classifier"
+  navbar:
+    left:
+      - href: census_analysis.qmd
+        text: Analysis
+
+format:
+  html:
+    theme: cosmo
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    code-tools: true
+    self-contained: true
+    fig-width: 9
+    fig-height: 5
+
+execute:
+  warning: false
+  message: false
