@@ -4,9 +4,9 @@ A portfolio analysis using the Census Bureau API to classify county-level econom
 
 ## Viewing the Report
 
-### Option 1 — Open the rendered HTML (recommended)
-Download [`census_analysis.html`](census_analysis.html) and open it in any browser.
-The file is fully self-contained — no server needed. All charts are interactive.
+### Option 1 — View online (recommended)
+**[https://altustd.github.io/census-API/](https://altustd.github.io/census-API/)**
+Fully interactive charts, no download needed.
 
 ### Option 2 — Download the PDF
 Download [`census_analysis.pdf`](census_analysis.pdf) for a print-ready static version.
