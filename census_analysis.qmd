@@ -3,6 +3,7 @@ title: "Classifying Economic Distress with U.S. Census Data"
 subtitle: "American Community Survey 5-Year Estimates · Logistic Regression"
 author: "Troy Altus"
 date: today
+jupyter: census-api
 format:
   html:
     theme: cosmo
