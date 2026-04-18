@@ -1,0 +1,25 @@
+[workspace]
+authors = ["Troy Altus <altustd@gmail.com>"]
+channels = ["conda-forge"]
+name = "census-API"
+platforms = ["osx-arm64"]
+version = "0.1.0"
+
+[tasks]
+render = "quarto render census_analysis.qmd"
+preview = "quarto preview census_analysis.qmd"
+render-pdf = "quarto render census_analysis.qmd --to pdf"
+
+[dependencies]
+python = "3.12.*"
+pandas = ">=3.0.2,<4"
+numpy = ">=2.4.3,<3"
+scikit-learn = ">=1.8.0,<2"
+plotly = ">=6.6.0,<7"
+python-dotenv = ">=1.2.2,<2"
+jupyter = ">=1.1.1,<2"
+ipykernel = ">=7.2.0,<8"
+
+[pypi-dependencies]
+census = ">=0.8.26, <0.9"
+us = ">=3.2.0, <4"

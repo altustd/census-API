@@ -13,13 +13,13 @@ Download [`census_analysis.pdf`](census_analysis.pdf) for a print-ready static v
 
 ### Option 3 — Render it yourself
 ```bash
-pip install -r requirements.txt
-cp .env.example .env        # add your Census API key
-./render.sh
+cp .env.example .env   # add your Census API key
+pixi run render        # renders HTML
+pixi run render-pdf    # renders PDF
+pixi run preview       # live preview in browser
 ```
 
-> `render.sh` sets the correct Python environment before calling Quarto.
-> If you get a `No module named yaml` error running `quarto render` directly, use `./render.sh`.
+Pixi manages the Python environment automatically — no manual installs needed.
 
 ---
 
