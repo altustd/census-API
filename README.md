@@ -15,8 +15,11 @@ Download [`census_analysis.pdf`](census_analysis.pdf) for a print-ready static v
 ```bash
 pip install -r requirements.txt
 cp .env.example .env        # add your Census API key
-quarto render census_analysis.qmd
+./render.sh
 ```
+
+> `render.sh` sets the correct Python environment before calling Quarto.
+> If you get a `No module named yaml` error running `quarto render` directly, use `./render.sh`.
 
 ---
 
