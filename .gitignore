@@ -5,6 +5,10 @@ Gmail - *
 __pycache__/
 .ipynb_checkpoints/
 _site/
+# docs/ is committed for GitHub Pages
 /.quarto/
 **/*.quarto_ipynb
 county_data.pkl
+# pixi environments
+.pixi/*
+!.pixi/config.toml
